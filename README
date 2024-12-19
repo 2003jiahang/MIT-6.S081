@@ -1,45 +1,89 @@
-xv6 is a re-implementation of Dennis Ritchie's and Ken Thompson's Unix
-Version 6 (v6).  xv6 loosely follows the structure and style of v6,
-but is implemented for a modern RISC-V multiprocessor using ANSI C.
+# Lab 4: Traps
 
-ACKNOWLEDGMENTS
+---
 
-xv6 is inspired by John Lions's Commentary on UNIX 6th Edition (Peer
-to Peer Communications; ISBN: 1-57398-013-7; 1st edition (June 14,
-2000)). See also https://pdos.csail.mit.edu/6.828/, which
-provides pointers to on-line resources for v6.
+## 1. 任务背景与目标
 
-The following people have made contributions: Russ Cox (context switching,
-locking), Cliff Frey (MP), Xiao Yu (MP), Nickolai Zeldovich, and Austin
-Clements.
+本实验主要探索如何通过 **trap** 机制来实现系统调用。`trap` 是操作系统中一种特殊的控制流机制，通常用于从用户模式转向内核模式。本实验的核心目标是理解 `trap` 的工作原理，如何通过汇编代码控制程序流，以及如何通过 `trap` 进行系统调用的上下文切换。通过分析和实现用户级的 `trap` 处理，我们加深了对操作系统核心机制的理解，尤其是调用栈、特权模式以及中断和陷阱的使用。
 
-We are also grateful for the bug reports and patches contributed by
-Silas Boyd-Wickizer, Anton Burtsev, Dan Cross, Cody Cutler, Mike CAT,
-Tej Chajed, Asami Doi, eyalz800, , Nelson Elhage, Saar Ettinger, Alice
-Ferrazzi, Nathaniel Filardo, Peter Froehlich, Yakir Goaron,Shivam
-Handa, Bryan Henry, jaichenhengjie, Jim Huang, Alexander Kapshuk,
-Anders Kaseorg, kehao95, Wolfgang Keller, Jonathan Kimmitt, Eddie
-Kohler, Austin Liew, Imbar Marinescu, Yandong Mao, Matan Shabtay,
-Hitoshi Mitake, Carmi Merimovich, Mark Morrissey, mtasm, Joel Nider,
-Greg Price, Ayan Shafqat, Eldar Sehayek, Yongming Shen, Fumiya
-Shigemitsu, Takahiro, Cam Tenny, tyfkda, Rafael Ubal, Warren Toomey,
-Stephen Tu, Pablo Ventura, Xi Wang, Keiichi Watanabe, Nicolas
-Wolovick, wxdao, Grant Wu, Jindong Zhang, Icenowy Zheng, and Zou Chang
-Wei.
+### 实验内容：
+- 理解并实现用户级的 `trap` 处理。
+- 熟悉 RISC-V 汇编，特别是函数调用约定、调用栈管理及特权级别切换。
+- 实现并调试与 `trap` 相关的系统调用。
 
-The code in the files that constitute xv6 is
-Copyright 2006-2020 Frans Kaashoek, Robert Morris, and Russ Cox.
+## 2. 关键概念
 
-ERROR REPORTS
+### 2.1 Trap Mechanism
+`trap` 是一种从用户模式到内核模式的跳转机制，通常由硬件或软件产生。在操作系统中，`trap` 通常用于中断、异常、系统调用等场景。当发生 `trap` 时，处理器会保存当前的程序状态并切换到内核模式，执行特定的系统调用或异常处理逻辑。
 
-Please send errors and suggestions to Frans Kaashoek and Robert Morris
-(kaashoek,rtm@mit.edu). The main purpose of xv6 is as a teaching
-operating system for MIT's 6.S081, so we are more interested in
-simplifications and clarifications than new features.
+### 2.2 Trampoline
+`trampoline` 是一种用于处理 `trap` 机制的中间代码，它负责从用户程序跳转到内核并处理系统调用。`trampoline` 代码通常执行最小化的上下文切换，恢复程序状态并执行所需的内核功能。
 
-BUILDING AND RUNNING XV6
+### 2.3 Calling Conventions and Stack
+在 RISC-V 架构下，函数参数和返回值的传递遵循一定的调用约定。对于一个函数调用，参数通过 `a0` 到 `a7` 寄存器传递，而返回值则存储在 `a0` 中。每当函数被调用时，调用者会在栈上为当前函数分配一个栈帧（stack frame），栈帧中存储了函数的局部变量、返回地址等信息。
 
-You will need a RISC-V "newlib" tool chain from
-https://github.com/riscv/riscv-gnu-toolchain, and qemu compiled for
-riscv64-softmmu. Once they are installed, and in your shell
-search path, you can run "make qemu".
+### 2.4 特权模式与汇编
+RISC-V 采用多级特权模式，用户模式和内核模式之间的切换通过 `trap` 机制完成。在实验中，我们编写了大量的 RISC-V 汇编代码，分析了如何通过汇编指令进行栈操作和控制流切换。
+
+## 3. 实验实现
+
+### 3.1 RISC-V 汇编代码分析
+在实验开始时，我们需要分析 `user/call.c` 中的 RISC-V 汇编代码，特别是 `call.asm` 文件中的 `g`、`f` 和 `main` 函数。通过对这些函数的分析，我们回答了一系列关于寄存器、函数调用和栈帧管理的问题：
+
+#### Q1: 哪些寄存器用于存储函数调用的参数？
+**A**: 在 RISC-V 架构中，函数的前八个参数存储在寄存器 `a0` 到 `a7` 中。如果函数有更多参数，超出部分会通过栈传递。
+
+#### Q2: `main` 中调用 `f` 和 `g` 函数的汇编代码在哪里？
+**A**: 在汇编代码中，`g(x)` 被内联到 `f(x)` 中，`f(x)` 又内联到 `main()` 中。因此，`main` 函数中并没有显式的 `f` 和 `g` 调用指令。
+
+#### Q3: `printf` 函数的地址是多少？
+**A**: 在 `main` 中，`printf` 使用 `pc-relative addressing` 来寻址，其地址为 `0x0000000000000628`。
+
+#### Q4: `jalr` 跳转到 `printf` 后，`ra` 寄存器的值是多少？
+**A**: `jalr` 指令会将返回地址存储到 `ra` 寄存器，返回地址为 `0x0000000000000038`，即跳转指令之后的地址。
+
+#### Q5: 运行以下代码的输出是什么？
+```c
+unsigned int i = 0x00646c72;
+printf("H%x Wo%s", 57616, &i);
+```
+**A**: 输出为 `He110 World`。在大端模式下，`i` 的值需要设置为 `0x726c6400`，并且 `57616` 不需要更改，因为它在十六进制下表示为 `110`，与字节序无关。
+
+#### Q6: 以下代码打印的 `y=` 后的值是什么？
+```c
+printf("x=%d y=%d", 3);
+```
+**A**: 输出的 `y=` 后的值是一个随机值。这是因为 `printf` 尝试读取超过提供的参数数目，导致 `a2` 寄存器包含了一个未初始化的值。
+
+### 3.2 实现 Backtrace 功能
+
+#### 问题描述
+为了调试，我们需要实现一个 `backtrace()` 函数，用于打印当前堆栈的函数调用路径。`backtrace` 打印的应该是栈帧中的返回地址，即函数调用的返回地址。
+
+#### 解决方案
+通过分析栈帧的结构，我们知道每个函数的栈帧包含一个返回地址（存储在 `fp-8` 处）。使用 `r_fp()` 获取当前帧指针（frame pointer），从而获取返回地址并逐层追溯栈帧。
+
+我们在 `kernel/printf.c` 中实现了 `backtrace()` 函数，并在 `sys_sleep` 函数中调用它以打印当前的栈追踪信息。结果如下：
+```assembly
+backtrace:
+0x0000000080002cda
+0x0000000080002bb6
+0x0000000080002898
+```
+
+然后，通过使用 `addr2line` 工具将这些地址转换为源码文件和行号，得到了如下输出：
+```plaintext
+kernel/sysproc.c:74
+kernel/syscall.c:224
+kernel/trap.c:85
+```
+
+### 3.3 实现 Alarm 功能
+
+#### 问题描述
+在实验中，我们还需要实现一个周期性警告机制（alarm），该机制允许进程在一定时间内定期收到 CPU 使用的警告信号。进程通过系统调用 `sigalarm` 注册一个时钟中断处理程序，当达到设定的时钟周期时，处理程序会被调用。
+
+#### 解决方案
+在 `proc` 结构体中，我们添加了与警告相关的字段，如 `alarm_interval`、`alarm_handler` 等。通过 `sigalarm` 和 `sigreturn` 系统调用，用户可以注册时钟处理程序，并在时钟中断时将控制权转交给该处理程序。中断处理程序完成后，通过 `sigreturn` 恢复程序的执行。
+
+在 `usertrap()` 函数中，我们根据 `alarm_interval` 和 `alarm_ticks` 来判断是否需要触发时钟警告。如果警告触发，我们会保存当前的 `trapframe`，并跳转到用户定义的处理程序，处理完毕后恢复程序的执行。
