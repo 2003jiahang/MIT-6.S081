@@ -1,4 +1,4 @@
-## Lab 7: Multithreading 
+# Lab 7: Multithreading 
 
 ---
 ### 实验目标
